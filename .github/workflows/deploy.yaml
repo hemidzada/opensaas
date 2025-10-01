@@ -12,12 +12,12 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: password
           POSTGRES_DB: opensaas
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -41,33 +41,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Wait for PostgreSQL to be ready
+      - name: Wait for PostgreSQL
         run: |
-          for i in {1..30}; do
-            if pg_isready -h localhost -p 5432 -U postgres; then
-              echo "PostgreSQL is ready!"
-              break
-            fi
-            echo "Waiting for PostgreSQL... ($i/30)"
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
             sleep 2
           done
       
-      - name: Install Wasp and Dependencies
-        run: |
-          cd ./template/app
-          curl -sSL https://get.wasp-lang.dev/installer.sh | sh
-          npm install
-      
-      - name: Create Migrations (Local DB Only)
+      - name: Install Dependencies and Build Wasp Project
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/opensaas
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/opensaas
         run: |
           cd ./template/app
+          npm install
+          curl -sSL https://get.wasp-lang.dev/installer.sh | sh
           
-          # Migration dosyalarını oluştur (eğer yoksa)
-          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only
+          # Migration dosyalarını oluştur (sadece dosya, DB'ye uygulamadan)
+          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migration already exists"
           
-          # Projeyi derle
+          # Wasp projesini derle
           /home/runner/.local/bin/wasp build
       
       - name: Build Client for Production
@@ -75,24 +68,38 @@ jobs:
           cd ./template/app/.wasp/build/web-app
           REACT_APP_API_URL=https://api.vidhub.ai npm run build
       
-      - name: Prepare Server Dockerfile with Migrations
+      - name: Prepare Migrations for Docker
+        run: |
+          # Migration dosyalarını .wasp/build içine kopyala
+          if [ -d "./template/app/migrations" ]; then
+            cp -r ./template/app/migrations ./template/app/.wasp/build/migrations
+            echo "Migrations copied successfully"
+          else
+            echo "No migrations folder found!"
+            exit 1
+          fi
+      
+      - name: Modify Server Dockerfile
         run: |
           cd ./template/app/.wasp/build
           
-          # Migrations klasörünü kopyala
-          if [ -d "../migrations" ]; then
-            cp -r ../migrations ./migrations
-          fi
+          # Dockerfile'ı düzenle - migrations'ı kopyala ve deploy et
+          # CMD satırından ÖNCE migration deployment ekle
+          sed -i '/CMD \["npm", "run", "start-production"\]/i \
+COPY --chown=node:node migrations ./migrations\n\
+RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./Dockerfile
           
-          # Dockerfile'a migration deployment ekle
-          sed -i '/CMD \["npm", "run", "start-production"\]/i COPY --chown=node:node migrations ./migrations\nRUN npx prisma migrate deploy' ./Dockerfile
+          echo "Modified Dockerfile:"
+          cat ./Dockerfile
       
       - name: Build and Push Server Image
         run: |
+          cd ./template/app/.wasp/build
           docker buildx build \
-            --file ./template/app/.wasp/build/Dockerfile \
+            --platform linux/amd64 \
             --tag ghcr.io/hemidzada/opensaas-server:main \
-            --push ./template/app
+            --push \
+            .
       
       - name: Build and Push Client Image
         run: |
@@ -103,11 +110,14 @@ jobs:
           EOF
           
           docker buildx build \
+            --platform linux/amd64 \
             --file ./Dockerfile.client \
             --tag ghcr.io/hemidzada/opensaas-client:main \
-            --push ./template/app/.wasp/build/web-app
+            --push \
+            ./template/app/.wasp/build/web-app
       
       - name: Trigger Coolify Deploys
         run: |
           curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }}
+          sleep 5
           curl -X POST ${{ secrets.CLIENT_COOLIFY_WEBHOOK }}
