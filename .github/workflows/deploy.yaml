@@ -8,22 +8,6 @@ on:
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
-    
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: user
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: db # <--- Veritabanı adı 'db'
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -43,32 +27,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install, Build, and Create Migrations
-        env:
-          # NIHAI DÜZELTME: Veritabanı URL'sinin sonuna veritabanı adını ekliyoruz.
-          DATABASE_URL: postgresql://user:password@localhost:5432/db
+      # --- 1. Projeyi Derle ---
+      - name: Install Dependencies and Build Project
         run: |
           cd ./template/app
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
-          
-          echo "init" | /home/runner/.local/bin/wasp db migrate-dev
-          
           /home/runner/.local/bin/wasp build
           
           echo "Building client for production..."
           cd ./.wasp/build/web-app
           REACT_APP_API_URL=https://api.vidhub.ai npm run build
 
-      - name: Fix Server Dockerfile and Build/Push Image
+      # --- 2. Sunucu Dockerfile'ını Son Hatalara Karşı Düzelt ---
+      - name: Prepare Server Build Environment
         run: |
-          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./template/app/.wasp/build/Dockerfile
+          # "/db: not found" hatası için eksik klasörü oluşturuyoruz
+          mkdir -p ./template/app/.wasp/build/db
           
-          docker buildx build \
-            --file ./template/app/.wasp/build/Dockerfile \
-            --tag ghcr.io/hemidzada/opensaas-server:main \
-            --push ./template/app
-            
+          # "Table not found" hatası için veritabanı migrate komutunu ve migrations klasörünü kopyalamayı Dockerfile'a ekliyoruz
+          sed -i '/EXPOSE/i COPY migrations ./migrations\nRUN npx prisma migrate deploy --schema=./db/schema.prisma' ./template/app/.wasp/build/Dockerfile
+
+      # --- 3. Sunucu (Server) İmajını Oluştur ve Yükle ---
+      - name: Build and Push Server Image
+        uses: docker/build-push-action@v4
+        with:
+          # ÖNEMLİ: Context'i, migrations klasörünü de içermesi için bir üst klasör yapıyoruz
+          context: ./template/app
+          file: ./template/app/.wasp/build/Dockerfile
+          push: true
+          tags: ghcr.io/hemidzada/opensaas-server:main
+
+      # --- 4. İstemci (Client) İmajını Oluştur ve Yükle ---
       - name: Build and Push Client Image
         run: |
           cat > Dockerfile.client <<EOF
@@ -82,6 +72,7 @@ jobs:
             --tag ghcr.io/hemidzada/opensaas-client:main \
             --push ./template/app/.wasp/build/web-app
       
+      # --- 5. Coolify'i Tetikle ---
       - name: Trigger Coolify Deploys
         run: |
           curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }}
