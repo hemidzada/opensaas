@@ -1,10 +1,8 @@
 name: Deploy OpenSaaS to Coolify
-
 on:
   push:
     branches:
       - main
-
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
@@ -23,26 +21,26 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
+      
       - name: Set up Node.js v22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
+      
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
+      
       - name: Wait for PostgreSQL
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
@@ -50,35 +48,56 @@ jobs:
             echo "Waiting for postgres..."
             sleep 2
           done
-
-      - name: Install, Create Migrations, and Build Project
+      
+      - name: Install Dependencies and Build Wasp Project
         env:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/opensaas
         run: |
           cd ./template/app
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
-          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migrations folder already exists."
+          
+          # Migration dosyalarını oluştur
+          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migration already exists"
+          
+          # Wasp projesini derle
           /home/runner/.local/bin/wasp build
-
+      
       - name: Build Client for Production
         run: |
           cd ./template/app/.wasp/build/web-app
           REACT_APP_API_URL=https://api.vidhub.ai npm run build
-          
-      - name: Prepare Server Dockerfile
+      
+      - name: Prepare Migrations for Docker
         run: |
-          cp -r ./template/app/migrations ./template/app/.wasp/build/
-          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy' ./template/app/.wasp/build/Dockerfile
+          if [ -d "./template/app/migrations" ]; then
+            cp -r ./template/app/migrations ./template/app/.wasp/build/migrations
+            echo "Migrations copied successfully"
+          else
+            echo "No migrations folder found!"
+            exit 1
+          fi
+      
+      - name: Modify Server Dockerfile
+        run: |
+          cd ./template/app/.wasp/build
           
+          # Dockerfile'a migration komutlarını ekle
+          sed -i '/CMD \["npm", "run", "start-production"\]/i COPY --chown=node:node migrations ./migrations' ./Dockerfile
+          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./Dockerfile
+          
+          echo "Modified Dockerfile:"
+          cat ./Dockerfile
+      
       - name: Build and Push Server Image
-        uses: docker/build-push-action@v4
-        with:
-          context: ./template/app/.wasp/build
-          file: ./template/app/.wasp/build/Dockerfile
-          push: true
-          tags: ghcr.io/hemidzada/opensaas-server:main
-
+        run: |
+          cd ./template/app/.wasp/build
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag ghcr.io/hemidzada/opensaas-server:main \
+            --push \
+            .
+      
       - name: Build and Push Client Image
         run: |
           cat > Dockerfile.client <<EOF
@@ -86,13 +105,14 @@ jobs:
           CMD ["-fallback", "index.html"]
           COPY ./build /srv/http
           EOF
-
+          
           docker buildx build \
             --platform linux/amd64 \
             --file ./Dockerfile.client \
+            # NIHAI DÜZELTME: Yanlış olan "server" kelimesi "client" olarak değiştirildi.
             --tag ghcr.io/hemidzada/opensaas-client:main \
             --push \
-            ./template/app/.wasp/build/web-app # <--- BU SATIR EKLENDİ
+            ./template/app/.wasp/build/web-app
       
       - name: Trigger Coolify Deploys
         run: |
