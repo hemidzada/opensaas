@@ -1,4 +1,4 @@
-name: Deploy OpenSaaS to Coolify
+name: Deploy OpenSaaS to Coolify (Final & Verified)
 
 on:
   push:
@@ -13,13 +13,13 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: user
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
-          POSTGRES_DB: db # <--- Veritabanı adı 'db'
+          POSTGRES_DB: opensaas
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -43,46 +43,66 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install, Build, and Create Migrations
+      - name: Wait for PostgreSQL
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+
+      - name: Install, Create Migrations, and Build
         env:
-          # NIHAI DÜZELTME: Veritabanı URL'sinin sonuna veritabanı adını ekliyoruz.
-          DATABASE_URL: postgresql://user:password@localhost:5432/db
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/opensaas
         run: |
           cd ./template/app
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
-          
-          echo "init" | /home/runner/.local/bin/wasp db migrate-dev
-          
+          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migrations folder might already exist, continuing."
           /home/runner/.local/bin/wasp build
-          
-          echo "Building client for production..."
-          cd ./.wasp/build/web-app
-          REACT_APP_API_URL=https://api.vidhub.ai npm run build
 
-      - name: Fix Server Dockerfile and Build/Push Image
+      - name: Build and Push Server Image
         run: |
-          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./template/app/.wasp/build/Dockerfile
-          
+          # Sunucu için, tüm düzeltmeleri içeren Dockerfile'ı anlık oluşturuyoruz
+          cat > Dockerfile.server <<EOF
+          FROM node:22-slim
+          WORKDIR /app
+          COPY --from=builder /app/.wasp/build/server/ ./
+          COPY --from=builder /app/migrations ./migrations
+          ENV NODE_ENV=production
+          ENV PORT=3001
+          EXPOSE 3001
+          CMD ["sh", "-c", "npx prisma migrate deploy && node src/index.js"]
+          EOF
+
+          # Docker imajını, build context'ini doğru vererek oluşturuyoruz
           docker buildx build \
-            --file ./template/app/.wasp/build/Dockerfile \
+            --file ./Dockerfile.server \
             --tag ghcr.io/hemidzada/opensaas-server:main \
-            --push ./template/app
-            
+            --build-context builder=./template/app \
+            --push .
+
       - name: Build and Push Client Image
         run: |
+          # Önce client'ın production build'ini alıyoruz
+          cd ./template/app/.wasp/build/web-app
+          REACT_APP_API_URL=https://api.vidhub.ai npm run build
+          
+          # Dockerfile'ı ana dizinde oluşturuyoruz
+          cd ../../../../
           cat > Dockerfile.client <<EOF
           FROM pierrezemb/gostatic
           CMD ["-fallback", "index.html"]
-          COPY ./build /srv/http
+          COPY ./template/app/.wasp/build/web-app/build /srv/http
           EOF
 
+          # İmajı ana dizinden oluşturup yüklüyoruz
           docker buildx build \
             --file ./Dockerfile.client \
             --tag ghcr.io/hemidzada/opensaas-client:main \
-            --push ./template/app/.wasp/build/web-app
+            --push .
       
       - name: Trigger Coolify Deploys
         run: |
-          curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }}
-          curl -X POST ${{ secrets.CLIENT_COOLIFY_WEBHOOK }}
+          curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }} --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}'
+          curl -X POST ${{ secrets.CLIENT_COOLIFY_WEBHOOK }} --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}'
