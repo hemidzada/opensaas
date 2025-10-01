@@ -1,4 +1,4 @@
-name: Deploy OpenSaaS to Coolify (Final & Verified)
+name: Deploy OpenSaaS to Coolify
 
 on:
   push:
@@ -51,58 +51,51 @@ jobs:
             sleep 2
           done
 
-      - name: Install, Create Migrations, and Build
+      - name: Install, Create Migrations, and Build Project
         env:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/opensaas
         run: |
           cd ./template/app
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
-          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migrations folder might already exist, continuing."
+          /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migrations folder already exists."
           /home/runner/.local/bin/wasp build
 
-      - name: Build and Push Server Image
+      - name: Build Client for Production
         run: |
-          # Sunucu için, tüm düzeltmeleri içeren Dockerfile'ı anlık oluşturuyoruz
-          cat > Dockerfile.server <<EOF
-          FROM node:22-slim
-          WORKDIR /app
-          COPY --from=builder /app/.wasp/build/server/ ./
-          COPY --from=builder /app/migrations ./migrations
-          ENV NODE_ENV=production
-          ENV PORT=3001
-          EXPOSE 3001
-          CMD ["sh", "-c", "npx prisma migrate deploy && node src/index.js"]
-          EOF
-
-          # Docker imajını, build context'ini doğru vererek oluşturuyoruz
-          docker buildx build \
-            --file ./Dockerfile.server \
-            --tag ghcr.io/hemidzada/opensaas-server:main \
-            --build-context builder=./template/app \
-            --push .
-
-      - name: Build and Push Client Image
-        run: |
-          # Önce client'ın production build'ini alıyoruz
           cd ./template/app/.wasp/build/web-app
           REACT_APP_API_URL=https://api.vidhub.ai npm run build
           
-          # Dockerfile'ı ana dizinde oluşturuyoruz
-          cd ../../../../
+      - name: Prepare Server Dockerfile
+        run: |
+          cp -r ./template/app/migrations ./template/app/.wasp/build/
+          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy' ./template/app/.wasp/build/Dockerfile
+          
+      - name: Build and Push Server Image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./template/app/.wasp/build
+          file: ./template/app/.wasp/build/Dockerfile
+          push: true
+          tags: ghcr.io/hemidzada/opensaas-server:main
+
+      - name: Build and Push Client Image
+        run: |
           cat > Dockerfile.client <<EOF
           FROM pierrezemb/gostatic
           CMD ["-fallback", "index.html"]
-          COPY ./template/app/.wasp/build/web-app/build /srv/http
+          COPY ./build /srv/http
           EOF
 
-          # İmajı ana dizinden oluşturup yüklüyoruz
           docker buildx build \
+            --platform linux/amd64 \
             --file ./Dockerfile.client \
             --tag ghcr.io/hemidzada/opensaas-client:main \
-            --push .
+            --push \
+            ./template/app/.wasp/build/web-app
       
       - name: Trigger Coolify Deploys
         run: |
           curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }} --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}'
+          sleep 5
           curl -X POST ${{ secrets.CLIENT_COOLIFY_WEBHOOK }} --header 'Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}'
