@@ -15,13 +15,13 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: db
+          POSTG-RES_USER: daltonik
+          POSTGRES_PASSWORD: 0oi90oi90oi9
+          POSTGRES_DB: vidhub
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U daltonik -d vidhub"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -48,7 +48,8 @@ jobs:
       # --- 1. Projeyi Derle ve Veritabanı Dosyalarını Oluştur ---
       - name: Install, Build, and Create Migrations
         env:
-          DATABASE_URL: postgresql://root:password@localhost:5432/db
+          # Geçici veritabanına doğru bilgilerle bağlanıyoruz
+          DATABASE_URL: postgresql://daltonik:0oi90oi90oi9@localhost:5432/vidhub
         run: |
           cd ./template/app
           npm install
@@ -68,7 +69,7 @@ jobs:
       # --- 2. Sunucu Dockerfile'ını Düzelt ve İmajı Oluştur ---
       - name: Fix Dockerfile, Build and Push Server Image
         run: |
-          # Dockerfile'a, oluşturduğumuz "migrations" klasörünü kopyalamasını söylüyoruz.
+          # Dockerfile'a, oluşturduğumuz "migrations" klasörünü kopyalamasını söylüyoruz
           sed -i '/EXPOSE/i COPY migrations ./migrations\nRUN npx prisma migrate deploy' ./template/app/.wasp/build/Dockerfile
           
           # Sunucu imajını oluşturup yüklüyoruz
