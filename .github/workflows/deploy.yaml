@@ -57,7 +57,7 @@ jobs:
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
           
-          # Migration dosyalarını oluştur (sadece dosya, DB'ye uygulamadan)
+          # Migration dosyalarını oluştur
           /home/runner/.local/bin/wasp db migrate-dev --name init --create-only || echo "Migration already exists"
           
           # Wasp projesini derle
@@ -70,7 +70,6 @@ jobs:
       
       - name: Prepare Migrations for Docker
         run: |
-          # Migration dosyalarını .wasp/build içine kopyala
           if [ -d "./template/app/migrations" ]; then
             cp -r ./template/app/migrations ./template/app/.wasp/build/migrations
             echo "Migrations copied successfully"
@@ -83,11 +82,9 @@ jobs:
         run: |
           cd ./template/app/.wasp/build
           
-          # Dockerfile'ı düzenle - migrations'ı kopyala ve deploy et
-          # CMD satırından ÖNCE migration deployment ekle
-          sed -i '/CMD \["npm", "run", "start-production"\]/i \
-COPY --chown=node:node migrations ./migrations\n\
-RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./Dockerfile
+          # Dockerfile'a migration komutlarını ekle
+          sed -i '/CMD \["npm", "run", "start-production"\]/i COPY --chown=node:node migrations ./migrations' ./Dockerfile
+          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./Dockerfile
           
           echo "Modified Dockerfile:"
           cat ./Dockerfile
@@ -112,7 +109,7 @@ RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./Dockerfile
           docker buildx build \
             --platform linux/amd64 \
             --file ./Dockerfile.client \
-            --tag ghcr.io/hemidzada/opensaas-client:main \
+            --tag ghcr.io/hemidzada/opensaas-server:main \
             --push \
             ./template/app/.wasp/build/web-app
       
