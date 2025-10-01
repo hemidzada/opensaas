@@ -109,7 +109,8 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --file ./Dockerfile.client \
-            --tag ghcr.io/hemidzada/opensaas-server:main \
+            # NIHAI DÜZELTME: Yanlış olan "server" kelimesi "client" olarak değiştirildi.
+            --tag ghcr.io/hemidzada/opensaas-client:main \
             --push \
             ./template/app/.wasp/build/web-app
       
