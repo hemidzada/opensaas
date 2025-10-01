@@ -15,7 +15,7 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTG-RES_USER: daltonik
+          POSTGRES_USER: daltonik
           POSTGRES_PASSWORD: 0oi90oi90oi9
           POSTGRES_DB: vidhub
         ports:
