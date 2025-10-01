@@ -9,15 +9,13 @@ jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
     
-    # --- GEÇİCİ VERİTABANI SERVİSİNİ BAŞLATIYORUZ ---
-    # Bu, SADECE kurulum sırasında "migrations" dosyalarını oluşturmak içindir.
     services:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: root # Wasp'ın beklediği kullanıcı adı
+          POSTGRES_USER: user
           POSTGRES_PASSWORD: password
-          POSTGRES_DB: db
+          POSTGRES_DB: db # <--- Veritabanı adı 'db'
         ports:
           - 5432:5432
         options: >-
@@ -45,40 +43,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 1. Projeyi Derle ve Veritabanı Dosyalarını Oluştur ---
       - name: Install, Build, and Create Migrations
         env:
-          # Geçici veritabanına doğru kullanıcıyla bağlanıyoruz
-          DATABASE_URL: postgresql://root:password@localhost:5432/db
+          # NIHAI DÜZELTME: Veritabanı URL'sinin sonuna veritabanı adını ekliyoruz.
+          DATABASE_URL: postgresql://user:password@localhost:5432/db
         run: |
           cd ./template/app
           npm install
           curl -sSL https://get.wasp-lang.dev/installer.sh | sh
           
-          # Bu komut "migrations" klasörünü oluşturacak/güncelleyecek
           echo "init" | /home/runner/.local/bin/wasp db migrate-dev
           
-          # Projeyi derliyoruz
           /home/runner/.local/bin/wasp build
           
-          # İstemciyi production için hazırlıyoruz
           echo "Building client for production..."
           cd ./.wasp/build/web-app
           REACT_APP_API_URL=https://api.vidhub.ai npm run build
 
-      # --- 2. Sunucu Dockerfile'ını Düzelt ve İmajı Oluştur ---
-      - name: Fix Dockerfile, Build and Push Server Image
+      - name: Fix Server Dockerfile and Build/Push Image
         run: |
-          # Dockerfile'a, oluşturduğumuz "migrations" klasörünü kopyalamasını söylüyoruz.
-          sed -i '/COPY db \.\/db/a COPY migrations .\/migrations' ./template/app/.wasp/build/Dockerfile
+          sed -i '/CMD \["npm", "run", "start-production"\]/i RUN npx prisma migrate deploy --schema=../db/schema.prisma' ./template/app/.wasp/build/Dockerfile
           
-          # Sunucu imajını oluşturup yüklüyoruz
           docker buildx build \
             --file ./template/app/.wasp/build/Dockerfile \
             --tag ghcr.io/hemidzada/opensaas-server:main \
             --push ./template/app
             
-      # --- 3. İstemci (Client) İmajını Oluştur ve Yükle ---
       - name: Build and Push Client Image
         run: |
           cat > Dockerfile.client <<EOF
@@ -92,7 +82,6 @@ jobs:
             --tag ghcr.io/hemidzada/opensaas-client:main \
             --push ./template/app/.wasp/build/web-app
       
-      # --- 4. Coolify'i Tetikle ---
       - name: Trigger Coolify Deploys
         run: |
           curl -X POST ${{ secrets.SERVER_COOLIFY_WEBHOOK }}
